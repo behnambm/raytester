@@ -1,0 +1,22 @@
+# Binary
+tester
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+*.iml
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Temp
+/tmp/
