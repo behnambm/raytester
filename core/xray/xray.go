@@ -3,6 +3,7 @@ package xray
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -16,20 +17,20 @@ const (
 )
 
 type ProxyConfig struct {
-	Protocol string
-	Address  string
-	Port     int
-	UUID     string
-	AlterID  int
-	Security string
-	Network  string
-	Path     string
-	Host     string
-	TLS      bool
-	SNI      string
-	Method   string
-	Password string
-	Raw      string
+	Protocol string `json:"protocol"`
+	Address  string `json:"address"`
+	Port     int    `json:"port"`
+	UUID     string `json:"uuid"`
+	AlterID  int    `json:"alter_id"`
+	Security string `json:"security"`
+	Network  string `json:"network"`
+	Path     string `json:"path"`
+	Host     string `json:"host"`
+	TLS      bool   `json:"tls"`
+	SNI      string `json:"sni"`
+	Method   string `json:"method"`
+	Password string `json:"password"`
+	Raw      string `json:"raw"`
 }
 
 type XrayInstance struct {
@@ -41,6 +42,7 @@ type XrayInstance struct {
 func NewInstance(workerID int) *XrayInstance {
 	port := BasePort + workerID
 	configPath := filepath.Join(TempDir, fmt.Sprintf("worker-%d.json", workerID))
+	log.Printf("[core:xray] NewInstance: workerID=%d port=%d configPath=%s", workerID, port, configPath)
 	return &XrayInstance{
 		Port:       port,
 		ConfigPath: configPath,
@@ -48,50 +50,78 @@ func NewInstance(workerID int) *XrayInstance {
 }
 
 func (xi *XrayInstance) WriteConfig(pc ProxyConfig) error {
+	log.Printf("[core:xray] WriteConfig: worker port=%d protocol=%s address=%s:%d", xi.Port, pc.Protocol, pc.Address, pc.Port)
+
 	cfg := buildConfig(pc, xi.Port)
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
+		log.Printf("[core:xray] WriteConfig: JSON marshal FAILED: %v", err)
 		return err
 	}
 
 	if err := os.MkdirAll(TempDir, 0755); err != nil {
+		log.Printf("[core:xray] WriteConfig: mkdir FAILED: %v", err)
 		return err
 	}
 
-	return os.WriteFile(xi.ConfigPath, data, 0644)
+	if err := os.WriteFile(xi.ConfigPath, data, 0644); err != nil {
+		log.Printf("[core:xray] WriteConfig: write file FAILED: %v", err)
+		return err
+	}
+
+	log.Printf("[core:xray] WriteConfig: SUCCESS, wrote %d bytes to %s", len(data), xi.ConfigPath)
+	return nil
 }
 
 func (xi *XrayInstance) Start(xrayPath string) error {
+	log.Printf("[core:xray] Start: port=%d xrayPath=%s configPath=%s", xi.Port, xrayPath, xi.ConfigPath)
+
 	if xi.Cmd != nil && xi.Cmd.Process != nil {
+		log.Printf("[core:xray] Start: killing previous process on port %d", xi.Port)
 		xi.Cmd.Process.Kill()
 		xi.Cmd.Wait()
 	}
 
 	xi.Cmd = exec.Command(xrayPath, "run", "-config", xi.ConfigPath)
-	return xi.Cmd.Start()
+	if err := xi.Cmd.Start(); err != nil {
+		log.Printf("[core:xray] Start: exec FAILED: %v", err)
+		return err
+	}
+
+	log.Printf("[core:xray] Start: SUCCESS, xray pid=%d", xi.Cmd.Process.Pid)
+	return nil
 }
 
 func (xi *XrayInstance) Stop() error {
+	log.Printf("[core:xray] Stop: port=%d", xi.Port)
 	if xi.Cmd != nil && xi.Cmd.Process != nil {
-		return xi.Cmd.Process.Kill()
+		err := xi.Cmd.Process.Kill()
+		log.Printf("[core:xray] Stop: killed process, err=%v", err)
+		return err
 	}
 	return nil
 }
 
 func (xi *XrayInstance) WaitReady(timeout time.Duration) bool {
+	log.Printf("[core:xray] WaitReady: port=%d timeout=%v", xi.Port, timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if isPortOpen(xi.Port) {
+			log.Printf("[core:xray] WaitReady: port %d is OPEN", xi.Port)
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	log.Printf("[core:xray] WaitReady: port %d TIMED OUT after %v", xi.Port, timeout)
 	return false
 }
 
 func (xi *XrayInstance) Cleanup() {
+	log.Printf("[core:xray] Cleanup: port=%d configPath=%s", xi.Port, xi.ConfigPath)
 	xi.Stop()
-	os.Remove(xi.ConfigPath)
+	if err := os.Remove(xi.ConfigPath); err != nil {
+		log.Printf("[core:xray] Cleanup: remove config file err=%v", err)
+	}
 }
 
 func isPortOpen(port int) bool {
@@ -103,7 +133,16 @@ func isPortOpen(port int) bool {
 	return true
 }
 
+func safeUUID(uuid string) string {
+	if len(uuid) >= 8 {
+		return uuid[:8] + "..."
+	}
+	return "(empty)"
+}
+
 func buildConfig(pc ProxyConfig, port int) map[string]interface{} {
+	log.Printf("[core:xray] buildConfig: protocol=%s address=%s:%d port=%d", pc.Protocol, pc.Address, pc.Port, port)
+
 	outbound := buildOutbound(pc)
 	inbound := map[string]interface{}{
 		"port":     port,
@@ -121,6 +160,7 @@ func buildConfig(pc ProxyConfig, port int) map[string]interface{} {
 }
 
 func buildOutbound(pc ProxyConfig) map[string]interface{} {
+	log.Printf("[core:xray] buildOutbound: protocol=%s", pc.Protocol)
 	switch pc.Protocol {
 	case "vless":
 		return buildVLESSOutbound(pc)
@@ -129,11 +169,14 @@ func buildOutbound(pc ProxyConfig) map[string]interface{} {
 	case "ss":
 		return buildSSOutbound(pc)
 	default:
+		log.Printf("[core:xray] buildOutbound: unknown protocol=%s", pc.Protocol)
 		return nil
 	}
 }
 
 func buildVLESSOutbound(pc ProxyConfig) map[string]interface{} {
+	log.Printf("[core:xray] buildVLESSOutbound: address=%s:%d uuid=%s", pc.Address, pc.Port, safeUUID(pc.UUID))
+
 	settings := map[string]interface{}{
 		"vnext": []interface{}{
 			map[string]interface{}{
@@ -178,13 +221,15 @@ func buildVLESSOutbound(pc ProxyConfig) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"protocol":      "vless",
-		"settings":      settings,
+		"protocol":       "vless",
+		"settings":       settings,
 		"streamSettings": streamSettings,
 	}
 }
 
 func buildVMessOutbound(pc ProxyConfig) map[string]interface{} {
+	log.Printf("[core:xray] buildVMessOutbound: address=%s:%d uuid=%s", pc.Address, pc.Port, safeUUID(pc.UUID))
+
 	settings := map[string]interface{}{
 		"vnext": []interface{}{
 			map[string]interface{}{
@@ -224,13 +269,15 @@ func buildVMessOutbound(pc ProxyConfig) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"protocol":      "vmess",
-		"settings":      settings,
+		"protocol":       "vmess",
+		"settings":       settings,
 		"streamSettings": streamSettings,
 	}
 }
 
 func buildSSOutbound(pc ProxyConfig) map[string]interface{} {
+	log.Printf("[core:xray] buildSSOutbound: address=%s:%d method=%s", pc.Address, pc.Port, pc.Method)
+
 	return map[string]interface{}{
 		"protocol": "shadowsocks",
 		"settings": map[string]interface{}{

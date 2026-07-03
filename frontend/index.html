@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ray Tester</title>
+    <script src="tailwind.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        .animate-pulse-slow { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div x-data="rayTester()" x-init="init()" class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="flex items-center gap-3 mb-6">
+            <div class="text-4xl">🚀</div>
+            <div>
+                <h1 class="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">Ray Tester</h1>
+                <p class="text-gray-400 text-sm">Proxy subscription tester with real-time updates</p>
+            </div>
+            <div class="ml-auto flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full" :class="connected ? 'bg-green-500' : 'bg-red-500'"></div>
+                <span class="text-sm text-gray-400" x-text="connected ? 'Connected' : 'Disconnected'"></span>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-1 mb-6 border-b border-gray-700">
+            <button @click="activeTab = 'manual'"
+                    :class="activeTab === 'manual' ? 'border-blue-500 text-blue-400 bg-gray-800' : 'border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-600'"
+                    class="px-6 py-3 border-b-2 font-medium transition-colors duration-200 rounded-t-lg">
+                ⚡ Manual Test
+            </button>
+            <button @click="activeTab = 'scheduled'; fetchScheduledTasks()"
+                    :class="activeTab === 'scheduled' ? 'border-blue-500 text-blue-400 bg-gray-800' : 'border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-600'"
+                    class="px-6 py-3 border-b-2 font-medium transition-colors duration-200 rounded-t-lg">
+                🕐 Scheduled Tasks
+            </button>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- TAB 1: Manual Test                                               -->
+        <!-- ================================================================ -->
+        <div x-show="activeTab === 'manual'">
+
+            <!-- Config Section -->
+            <div class="bg-gray-800 rounded-2xl p-6 mb-6 border border-gray-700">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div class="md:col-span-2">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Subscription URL</label>
+                        <input type="text" x-model="config.url"
+                               class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-100 placeholder-gray-400"
+                               placeholder="https://raw.githubusercontent.com/...">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Max Latency</label>
+                        <input type="text" x-model="config.max_latency"
+                               class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-100 placeholder-gray-400"
+                               placeholder="500ms">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Workers</label>
+                        <input type="number" x-model.number="config.workers"
+                               class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-100 placeholder-gray-400"
+                               placeholder="20">
+                    </div>
+                </div>
+                <div class="flex gap-3 mt-4">
+                    <button @click="startTest()"
+                            :disabled="stats.status === 'testing' || stats.status === 'downloading'"
+                            class="px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:from-gray-600 disabled:to-gray-600 disabled:cursor-not-allowed rounded-xl font-medium transition-all duration-200 flex items-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        Start
+                    </button>
+                    <button x-show="stats.status === 'testing' || stats.status === 'downloading'"
+                            @click="stopTest()"
+                            class="px-6 py-3 bg-red-600 hover:bg-red-700 rounded-xl font-medium transition-all duration-200 flex items-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>
+                        </svg>
+                        Stop
+                    </button>
+                </div>
+            </div>
+
+            <!-- Stats Section -->
+            <div class="bg-gray-800 rounded-2xl p-6 mb-6 border border-gray-700">
+                <div class="mb-4">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-sm font-medium text-gray-300">Progress</span>
+                        <span class="text-sm font-medium text-blue-400" x-text="Math.round(stats.progress * 100) + '%'"></span>
+                    </div>
+                    <div class="w-full bg-gray-700 rounded-full h-3">
+                        <div class="bg-gradient-to-r from-blue-500 to-purple-500 h-3 rounded-full transition-all duration-300"
+                             :style="'width: ' + (stats.progress * 100) + '%'"></div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-6 gap-4">
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-blue-400" x-text="stats.tested_count"></div>
+                        <div class="text-xs text-gray-400">Tested</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-gray-300" x-text="stats.total_configs"></div>
+                        <div class="text-xs text-gray-400">Total</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-green-400" x-text="stats.success_count"></div>
+                        <div class="text-xs text-gray-400">Success</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-red-400" x-text="stats.fail_count"></div>
+                        <div class="text-xs text-gray-400">Failed</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-yellow-400" x-text="stats.min_latency ? formatDuration(stats.min_latency) : '-'"></div>
+                        <div class="text-xs text-gray-400">Min Latency</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-orange-400" x-text="stats.avg_latency ? formatDuration(stats.avg_latency) : '-'"></div>
+                        <div class="text-xs text-gray-400">Avg Latency</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Filters Section -->
+            <div class="bg-gray-800 rounded-2xl p-4 mb-4 border border-gray-700">
+                <div class="flex flex-wrap gap-3 items-center">
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm text-gray-400">Sort:</span>
+                        <select x-model="sortBy" class="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500">
+                            <option value="latency">Latency</option>
+                            <option value="country">Country</option>
+                            <option value="protocol">Protocol</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm text-gray-400">Protocol:</span>
+                        <select x-model="filterProtocol" class="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500">
+                            <option value="">All</option>
+                            <option value="vless">VLESS</option>
+                            <option value="vmess">VMess</option>
+                            <option value="ss">Shadowsocks</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm text-gray-400">Country:</span>
+                        <div class="relative">
+                            <input type="text" x-model="filterCountry" placeholder="Search country..."
+                                   class="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 w-40"
+                                   @focus="showCountryDropdown = true" @blur="setTimeout(() => showCountryDropdown = false, 200)">
+                            <div x-show="showCountryDropdown && filteredCountries.length > 0"
+                                 class="absolute z-10 mt-1 w-48 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                <template x-for="country in filteredCountries" :key="country.code">
+                                    <div @click="filterCountry = country.code; showCountryDropdown = false"
+                                         class="px-3 py-2 hover:bg-gray-600 cursor-pointer flex items-center gap-2">
+                                        <span x-text="country.flag"></span>
+                                        <span x-text="country.name"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                    <button @click="copyAll()" class="ml-auto px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium transition-colors duration-200 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path>
+                        </svg>
+                        Copy All
+                    </button>
+                </div>
+            </div>
+
+            <!-- Results Table -->
+            <div class="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full">
+                        <thead>
+                            <tr class="bg-gray-750 border-b border-gray-700">
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">#</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">URL</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Protocol</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Latency</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Country</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-700">
+                            <template x-for="(result, index) in filteredResults" :key="index">
+                                <tr class="hover:bg-gray-750 transition-colors duration-150">
+                                    <td class="px-4 py-3 text-sm text-gray-400" x-text="index + 1"></td>
+                                    <td class="px-4 py-3">
+                                        <div class="text-sm text-gray-200 truncate max-w-md" x-text="result.config.raw.substring(0, 60) + '...'"></div>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <span class="px-2 py-1 text-xs font-medium rounded-full"
+                                              :class="{
+                                                  'bg-blue-900 text-blue-300': result.config.protocol === 'vless',
+                                                  'bg-purple-900 text-purple-300': result.config.protocol === 'vmess',
+                                                  'bg-orange-900 text-orange-300': result.config.protocol === 'ss'
+                                              }"
+                                              x-text="result.config.protocol.toUpperCase()"></span>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <span class="text-sm font-medium" :class="{
+                                            'text-green-400': result.latency < 200000000,
+                                            'text-yellow-400': result.latency >= 200000000 && result.latency < 500000000,
+                                            'text-red-400': result.latency >= 500000000
+                                        }" x-text="formatDuration(result.latency)"></span>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <div class="flex items-center gap-2">
+                                            <span x-text="getCountryFlag(result.country)"></span>
+                                            <span class="text-sm text-gray-300" x-text="result.country || 'Unknown'"></span>
+                                        </div>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <div class="flex justify-center gap-2">
+                                            <button @click="copyConfig(result)" class="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors duration-200" title="Copy">
+                                                <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path>
+                                                </svg>
+                                            </button>
+                                            <button @click="showQRCode(result)" class="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors duration-200" title="QR Code">
+                                                <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z"></path>
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+                <div x-show="filteredResults.length === 0" class="p-8 text-center text-gray-400">
+                    <svg class="w-12 h-12 mx-auto mb-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    <p>No results yet. Start a test to see working configs.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- TAB 2: Scheduled Tasks                                           -->
+        <!-- ================================================================ -->
+        <div x-show="activeTab === 'scheduled'">
+
+            <!-- Create Task Button & Form -->
+            <div class="mb-6">
+                <button @click="showCreateForm = !showCreateForm"
+                        class="px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-xl font-medium transition-all duration-200 flex items-center gap-2">
+                    <span x-text="showCreateForm ? '−' : '+'"></span>
+                    <span x-text="showCreateForm ? 'Cancel' : 'New Scheduled Task'"></span>
+                </button>
+
+                <!-- Create Form -->
+                <div x-show="showCreateForm" class="bg-gray-800 rounded-2xl p-6 mt-4 border border-gray-700">
+                    <h3 class="text-lg font-medium mb-4">Create Scheduled Task</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Task Name</label>
+                            <input type="text" x-model="taskForm.name"
+                                   class="w-full px-4 py-2.5 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-100 placeholder-gray-400"
+                                   placeholder="My daily check">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Subscription URL</label>
+                            <input type="text" x-model="taskForm.url"
+                                   class="w-full px-4 py-2.5 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-100 placeholder-gray-400"
+                                   placeholder="https://...">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Cron Expression</label>
+                            <input type="text" x-model="taskForm.cron_expr"
+                                   class="w-full px-4 py-2.5 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-100 placeholder-gray-400 font-mono text-sm"
+                                   placeholder="0 */3 * * * *">
+                        </div>
+                    </div>
+                    <!-- Cron Presets -->
+                    <div class="mt-2 flex flex-wrap gap-2">
+                        <span class="text-xs text-gray-400 self-center mr-1">Quick:</span>
+                        <button @click="setCronPreset('0 */30 * * * *')" class="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-300">30min</button>
+                        <button @click="setCronPreset('0 0 * * * *')" class="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-300">1h</button>
+                        <button @click="setCronPreset('0 0 */3 * * *')" class="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-300">3h</button>
+                        <button @click="setCronPreset('0 0 */6 * * *')" class="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-300">6h</button>
+                        <button @click="setCronPreset('0 0 */12 * * *')" class="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-300">12h</button>
+                        <button @click="setCronPreset('0 0 0 * * *')" class="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-300">Daily</button>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Max Latency</label>
+                            <input type="text" x-model="taskForm.max_latency"
+                                   class="w-full px-4 py-2.5 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-100 placeholder-gray-400"
+                                   placeholder="500ms">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Workers</label>
+                            <input type="number" x-model.number="taskForm.workers"
+                                   class="w-full px-4 py-2.5 bg-gray-700 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-100 placeholder-gray-400"
+                                   placeholder="20">
+                        </div>
+                        <div class="flex flex-col justify-end gap-2">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" x-model="taskForm.run_now"
+                                       class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-green-500 focus:ring-green-500">
+                                <span class="text-sm text-gray-300">Run immediately after creation</span>
+                            </label>
+                            <button @click="createScheduledTask()"
+                                    class="w-full px-4 py-2.5 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 rounded-xl font-medium transition-all duration-200">
+                                Create Task
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tasks List -->
+            <div class="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full">
+                        <thead>
+                            <tr class="bg-gray-750 border-b border-gray-700">
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Name</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">URL</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Schedule</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Status</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Next Run</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Runs</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Success</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Failed</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Last Run</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Avg Time</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-700">
+                            <template x-for="task in scheduledTasks" :key="task.id">
+                                <tr class="hover:bg-gray-750 transition-colors duration-150">
+                                    <td class="px-4 py-3">
+                                        <span class="text-sm font-medium text-gray-200" x-text="task.name"></span>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <div class="text-sm text-gray-400 truncate max-w-[200px]" x-text="task.url.length > 40 ? task.url.substring(0, 40) + '...' : task.url"></div>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <code class="text-xs bg-gray-700 px-2 py-1 rounded text-gray-300" x-text="task.cron_expr"></code>
+                                    </td>
+                                    <td class="px-4 py-3 text-center">
+                                        <button @click="toggleTaskEnabled(task)"
+                                                :class="task.enabled ? 'bg-green-600' : 'bg-gray-600'"
+                                                class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200">
+                                            <span :class="task.enabled ? 'translate-x-6' : 'translate-x-1'"
+                                                  class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200"></span>
+                                        </button>
+                                    </td>
+                                    <td class="px-4 py-3 text-center">
+                                        <span class="text-xs text-blue-400" x-text="task.next_run ? formatDate(task.next_run) : '—'"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-center">
+                                        <span class="text-sm text-gray-300" x-text="task.metrics.total_runs || 0"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-center">
+                                        <span class="text-sm text-green-400" x-text="task.metrics.success_runs || 0"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-center">
+                                        <span class="text-sm" :class="(task.metrics.failure_runs || 0) > 0 ? 'text-red-400' : 'text-gray-400'" x-text="task.metrics.failure_runs || 0"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-center">
+                                        <span class="text-xs text-gray-400" x-text="task.metrics.last_run_time ? formatDate(task.metrics.last_run_time) : 'Never'"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-center">
+                                        <span class="text-xs text-gray-400" x-text="task.metrics.avg_run_duration ? formatDuration(task.metrics.avg_run_duration) : '-'"></span>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <div class="flex justify-center gap-1">
+                                            <button @click="runScheduledTaskNow(task.id)" title="Run Now"
+                                                    :disabled="task.running"
+                                                    class="p-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors duration-200 disabled:opacity-50">
+                                                <svg class="w-4 h-4 text-green-400" fill="currentColor" viewBox="0 0 24 24">
+                                                    <path d="M8 5v14l11-7z"></path>
+                                                </svg>
+                                            </button>
+                                            <button @click="viewTaskResults(task)" title="View Results"
+                                                    class="p-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors duration-200">
+                                                <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                                                </svg>
+                                            </button>
+                                            <button @click="deleteScheduledTask(task.id)" title="Delete"
+                                                    class="p-1.5 bg-gray-700 hover:bg-red-700 rounded-lg transition-colors duration-200">
+                                                <svg class="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+                <div x-show="scheduledTasks.length === 0" class="p-8 text-center text-gray-400">
+                    <svg class="w-12 h-12 mx-auto mb-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    <p>No scheduled tasks yet. Create one to get started.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- Results Modal (shared)                                           -->
+        <!-- ================================================================ -->
+        <div x-show="showResultsModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="showResultsModal = false">
+            <div class="bg-gray-800 rounded-2xl p-6 max-w-5xl w-full mx-4 max-h-[80vh] flex flex-col">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-medium">
+                        Results: <span class="text-blue-400" x-text="selectedTask?.name || ''"></span>
+                        <span class="text-sm text-gray-400 ml-2" x-text="modalResults.length + ' configs'"></span>
+                    </h3>
+                    <button @click="showResultsModal = false" class="text-gray-400 hover:text-gray-200">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="overflow-auto flex-1">
+                    <table class="w-full">
+                        <thead>
+                            <tr class="bg-gray-750 border-b border-gray-700 sticky top-0">
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">#</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">URL</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Protocol</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Latency</th>
+                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Country</th>
+                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-700">
+                            <template x-for="(result, index) in modalResults" :key="index">
+                                <tr class="hover:bg-gray-750 transition-colors duration-150">
+                                    <td class="px-4 py-3 text-sm text-gray-400" x-text="index + 1"></td>
+                                    <td class="px-4 py-3">
+                                        <div class="text-sm text-gray-200 truncate max-w-sm" x-text="result.config.raw.substring(0, 60) + '...'"></div>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <span class="px-2 py-1 text-xs font-medium rounded-full"
+                                              :class="{
+                                                  'bg-blue-900 text-blue-300': result.config.protocol === 'vless',
+                                                  'bg-purple-900 text-purple-300': result.config.protocol === 'vmess',
+                                                  'bg-orange-900 text-orange-300': result.config.protocol === 'ss'
+                                              }"
+                                              x-text="result.config.protocol.toUpperCase()"></span>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <span class="text-sm font-medium" :class="{
+                                            'text-green-400': result.latency < 200000000,
+                                            'text-yellow-400': result.latency >= 200000000 && result.latency < 500000000,
+                                            'text-red-400': result.latency >= 500000000
+                                        }" x-text="formatDuration(result.latency)"></span>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <div class="flex items-center gap-2">
+                                            <span x-text="getCountryFlag(result.country)"></span>
+                                            <span class="text-sm text-gray-300" x-text="result.country || 'Unknown'"></span>
+                                        </div>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <div class="flex justify-center gap-2">
+                                            <button @click="copyModalResult(result)" class="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors duration-200" title="Copy">
+                                                <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path>
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <div x-show="modalResults.length === 0" class="p-8 text-center text-gray-400">
+                        <p>No results for this task yet.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- QR Code Modal -->
+        <div x-show="showQR" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="showQR = false">
+            <div class="bg-gray-800 rounded-2xl p-6 max-w-sm w-full mx-4">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-medium">QR Code</h3>
+                    <button @click="showQR = false" class="text-gray-400 hover:text-gray-200">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div id="qrcode" class="flex justify-center bg-white p-4 rounded-xl"></div>
+                <p class="mt-4 text-sm text-gray-400 text-center break-all" x-text="qrContent"></p>
+            </div>
+        </div>
+
+        <!-- Toast Notification -->
+        <div x-show="toast.show" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 translate-y-2" x-transition:enter-end="opacity-100 translate-y-0" x-transition:leave="transition ease-in duration-200" x-transition:leave-start="opacity-100 translate-y-0" x-transition:leave-end="opacity-0 translate-y-2"
+             class="fixed bottom-4 right-4 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 shadow-lg flex items-center gap-2 z-50">
+            <svg class="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            <span x-text="toast.message"></span>
+        </div>
+    </div>
+
+    <script src="qrcode.min.js"></script>
+    <script>
+        function rayTester() {
+            return {
+                // ---- Core state ----
+                connected: false,
+                ws: null,
+                sessionId: null,
+                activeTab: 'manual',
+
+                // ---- Manual Test state ----
+                config: {
+                    url: '',
+                    max_latency: '500ms',
+                    workers: 20
+                },
+                stats: {
+                    total_configs: 0,
+                    tested_count: 0,
+                    success_count: 0,
+                    fail_count: 0,
+                    progress: 0,
+                    status: 'idle',
+                    min_latency: 0,
+                    max_latency: 0,
+                    avg_latency: 0
+                },
+                results: [],
+                sortBy: 'latency',
+                filterProtocol: '',
+                filterCountry: '',
+                showCountryDropdown: false,
+
+                // ---- Scheduled Tasks state ----
+                scheduledTasks: [],
+                showCreateForm: false,
+                taskForm: {
+                    name: '',
+                    url: '',
+                    cron_expr: '',
+                    max_latency: '500ms',
+                    workers: 20,
+                    run_now: false
+                },
+                showResultsModal: false,
+                modalResults: [],
+                selectedTask: null,
+
+                // ---- Shared ----
+                showQR: false,
+                qrContent: '',
+                toast: {
+                    show: false,
+                    message: ''
+                },
+                countries: [
+                    { code: 'US', name: 'United States', flag: '🇺🇸' },
+                    { code: 'GB', name: 'United Kingdom', flag: '🇬🇧' },
+                    { code: 'DE', name: 'Germany', flag: '🇩🇪' },
+                    { code: 'NL', name: 'Netherlands', flag: '🇳🇱' },
+                    { code: 'FR', name: 'France', flag: '🇫🇷' },
+                    { code: 'JP', name: 'Japan', flag: '🇯🇵' },
+                    { code: 'KR', name: 'South Korea', flag: '🇰🇷' },
+                    { code: 'SG', name: 'Singapore', flag: '🇸🇬' },
+                    { code: 'AU', name: 'Australia', flag: '🇦🇺' },
+                    { code: 'CA', name: 'Canada', flag: '🇨🇦' },
+                    { code: 'BR', name: 'Brazil', flag: '🇧🇷' },
+                    { code: 'IN', name: 'India', flag: '🇮🇳' },
+                    { code: 'TR', name: 'Turkey', flag: '🇹🇷' },
+                    { code: 'RU', name: 'Russia', flag: '🇷🇺' },
+                    { code: 'UA', name: 'Ukraine', flag: '🇺🇦' },
+                    { code: 'PL', name: 'Poland', flag: '🇵🇱' },
+                    { code: 'ES', name: 'Spain', flag: '🇪🇸' },
+                    { code: 'IT', name: 'Italy', flag: '🇮🇹' },
+                    { code: 'SE', name: 'Sweden', flag: '🇸🇪' },
+                    { code: 'CH', name: 'Switzerland', flag: '🇨🇭' },
+                    { code: 'AT', name: 'Austria', flag: '🇦🇹' },
+                    { code: 'BE', name: 'Belgium', flag: '🇧🇪' },
+                    { code: 'DK', name: 'Denmark', flag: '🇩🇰' },
+                    { code: 'FI', name: 'Finland', flag: '🇫🇮' },
+                    { code: 'NO', name: 'Norway', flag: '🇳🇴' },
+                    { code: 'IE', name: 'Ireland', flag: '🇮🇪' },
+                    { code: 'PT', name: 'Portugal', flag: '🇵🇹' },
+                    { code: 'CZ', name: 'Czech Republic', flag: '🇨🇿' },
+                    { code: 'RO', name: 'Romania', flag: '🇷🇴' },
+                    { code: 'HU', name: 'Hungary', flag: '🇭🇺' },
+                    { code: 'HK', name: 'Hong Kong', flag: '🇭🇰' },
+                    { code: 'TW', name: 'Taiwan', flag: '🇹🇼' },
+                    { code: 'TH', name: 'Thailand', flag: '🇹🇭' },
+                    { code: 'VN', name: 'Vietnam', flag: '🇻🇳' },
+                    { code: 'MY', name: 'Malaysia', flag: '🇲🇾' },
+                    { code: 'ID', name: 'Indonesia', flag: '🇮🇩' },
+                    { code: 'PH', name: 'Philippines', flag: '🇵🇭' },
+                    { code: 'AE', name: 'UAE', flag: '🇦🇪' },
+                    { code: 'SA', name: 'Saudi Arabia', flag: '🇸🇦' },
+                    { code: 'IL', name: 'Israel', flag: '🇮🇱' },
+                    { code: 'ZA', name: 'South Africa', flag: '🇿🇦' },
+                    { code: 'MX', name: 'Mexico', flag: '🇲🇽' },
+                    { code: 'AR', name: 'Argentina', flag: '🇦🇷' },
+                    { code: 'CL', name: 'Chile', flag: '🇨🇱' },
+                    { code: 'CO', name: 'Colombia', flag: '🇨🇴' },
+                    { code: 'EE', name: 'Estonia', flag: '🇪🇪' },
+                    { code: 'LT', name: 'Lithuania', flag: '🇱🇹' },
+                    { code: 'LV', name: 'Latvia', flag: '🇱🇻' },
+                    { code: 'BG', name: 'Bulgaria', flag: '🇧🇬' },
+                    { code: 'GR', name: 'Greece', flag: '🇬🇷' },
+                    { code: 'CY', name: 'Cyprus', flag: '🇨🇾' },
+                    { code: 'MT', name: 'Malta', flag: '🇲🇹' },
+                    { code: 'IS', name: 'Iceland', flag: '🇮🇸' },
+                    { code: 'LU', name: 'Luxembourg', flag: '🇱🇺' },
+                    { code: 'NZ', name: 'New Zealand', flag: '🇳🇿' }
+                ],
+
+                // ---- Init ----
+                init() {
+                    console.log('Initializing Ray Tester...');
+                    try {
+                        this.connectWebSocket();
+                    } catch (error) {
+                        console.error('Initialization error:', error);
+                    }
+                },
+
+                // ---- WebSocket ----
+                connectWebSocket() {
+                    if (!this.sessionId) {
+                        this.connected = false;
+                        return;
+                    }
+                    const wsUrl = `ws://${window.location.host}/api/ws?id=${this.sessionId}`;
+                    this.ws = new WebSocket(wsUrl);
+
+                    this.ws.onopen = () => {
+                        this.connected = true;
+                    };
+
+                    this.ws.onclose = () => {
+                        this.connected = false;
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+
+                    this.ws.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                    };
+
+                    this.ws.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        switch (data.type) {
+                            case 'stats':
+                                this.stats = data.payload;
+                                break;
+                            case 'result':
+                                this.results.push(data.payload);
+                                break;
+                            case 'status':
+                                this.stats.status = data.payload.status;
+                                break;
+                        }
+                    };
+                },
+
+                // ---- Manual Test methods ----
+                async fetchStats() {
+                    if (!this.sessionId) return;
+                    try {
+                        const response = await fetch(`/api/test/${this.sessionId}/stats`);
+                        const data = await response.json();
+                        this.stats = data;
+                    } catch (error) {
+                        console.error('Failed to fetch stats:', error);
+                    }
+                },
+
+                async fetchResults() {
+                    if (!this.sessionId) return;
+                    try {
+                        const response = await fetch(`/api/test/${this.sessionId}/results`);
+                        const data = await response.json();
+                        this.results = data;
+                    } catch (error) {
+                        console.error('Failed to fetch results:', error);
+                    }
+                },
+
+                async startTest() {
+                    if (!this.config.url) {
+                        this.showToast('Please enter a URL');
+                        return;
+                    }
+
+                    try {
+                        const response = await fetch('/api/test', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                url: this.config.url,
+                                max_latency: this.config.max_latency,
+                                workers: this.config.workers
+                            })
+                        });
+
+                        const data = await response.json();
+
+                        if (response.ok) {
+                            this.results = [];
+                            this.sessionId = data.id;
+                            this.connectWebSocket();
+                            this.fetchStats();
+                            this.fetchResults();
+                            this.showToast('Test started');
+                        } else {
+                            this.showToast(data.error || 'Failed to start test');
+                        }
+                    } catch (error) {
+                        console.error('Failed to start test:', error);
+                        this.showToast('Failed to start test: ' + error.message);
+                    }
+                },
+
+                async stopTest() {
+                    if (!this.sessionId) return;
+                    try {
+                        await fetch(`/api/test/${this.sessionId}/stop`, { method: 'POST' });
+                        this.showToast('Test stopped');
+                    } catch (error) {
+                        this.showToast('Failed to stop test');
+                    }
+                },
+
+                // ---- Scheduled Tasks methods ----
+                async fetchScheduledTasks() {
+                    try {
+                        const response = await fetch('/api/scheduler/tasks');
+                        const data = await response.json();
+                        this.scheduledTasks = data;
+                    } catch (error) {
+                        console.error('Failed to fetch scheduled tasks:', error);
+                    }
+                },
+
+                async createScheduledTask() {
+                    if (!this.taskForm.name || !this.taskForm.url || !this.taskForm.cron_expr) {
+                        this.showToast('Name, URL, and Cron are required');
+                        return;
+                    }
+
+                    try {
+                        const wasRunNow = this.taskForm.run_now;
+                        const response = await fetch('/api/scheduler/tasks', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                name: this.taskForm.name,
+                                url: this.taskForm.url,
+                                cron_expr: this.taskForm.cron_expr,
+                                max_latency: this.taskForm.max_latency,
+                                workers: this.taskForm.workers,
+                                enabled: true,
+                                run_now: wasRunNow
+                            })
+                        });
+
+                        if (response.ok) {
+                            this.taskForm = { name: '', url: '', cron_expr: '', max_latency: '500ms', workers: 20, run_now: false };
+                            this.showCreateForm = false;
+                            await this.fetchScheduledTasks();
+                            this.showToast(wasRunNow ? 'Task created and running' : 'Task created');
+                        } else {
+                            const data = await response.json();
+                            this.showToast(data.error || 'Failed to create task');
+                        }
+                    } catch (error) {
+                        console.error('Failed to create task:', error);
+                        this.showToast('Failed to create task');
+                    }
+                },
+
+                async deleteScheduledTask(id) {
+                    try {
+                        await fetch(`/api/scheduler/tasks/${id}`, { method: 'DELETE' });
+                        await this.fetchScheduledTasks();
+                        this.showToast('Task deleted');
+                    } catch (error) {
+                        console.error('Failed to delete task:', error);
+                        this.showToast('Failed to delete task');
+                    }
+                },
+
+                async runScheduledTaskNow(id) {
+                    try {
+                        const response = await fetch(`/api/scheduler/tasks/${id}/run`, { method: 'POST' });
+                        if (response.ok) {
+                            this.showToast('Task triggered');
+                            setTimeout(() => this.fetchScheduledTasks(), 2000);
+                        } else {
+                            const data = await response.json();
+                            this.showToast(data.error || 'Failed to run task');
+                        }
+                    } catch (error) {
+                        console.error('Failed to run task:', error);
+                        this.showToast('Failed to run task');
+                    }
+                },
+
+                async toggleTaskEnabled(task) {
+                    try {
+                        const response = await fetch(`/api/scheduler/tasks/${task.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ enabled: !task.enabled })
+                        });
+                        if (response.ok) {
+                            await this.fetchScheduledTasks();
+                        }
+                    } catch (error) {
+                        console.error('Failed to toggle task:', error);
+                    }
+                },
+
+                async viewTaskResults(task) {
+                    this.selectedTask = task;
+                    try {
+                        const response = await fetch(`/api/scheduler/tasks/${task.id}/results`);
+                        const data = await response.json();
+                        this.modalResults = data;
+                        this.showResultsModal = true;
+                    } catch (error) {
+                        console.error('Failed to fetch task results:', error);
+                        this.showToast('Failed to load results');
+                    }
+                },
+
+                setCronPreset(expr) {
+                    this.taskForm.cron_expr = expr;
+                },
+
+                // ---- Shared Utilities ----
+                get filteredResults() {
+                    let filtered = [...this.results];
+
+                    if (this.filterProtocol) {
+                        filtered = filtered.filter(r => r.config.protocol === this.filterProtocol);
+                    }
+
+                    if (this.filterCountry) {
+                        const country = this.filterCountry.toLowerCase();
+                        filtered = filtered.filter(r => r.country && r.country.toLowerCase().includes(country));
+                    }
+
+                    filtered.sort((a, b) => {
+                        switch (this.sortBy) {
+                            case 'latency':
+                                return a.latency - b.latency;
+                            case 'country':
+                                return (a.country || '').localeCompare(b.country || '');
+                            case 'protocol':
+                                return a.config.protocol.localeCompare(b.config.protocol);
+                            default:
+                                return 0;
+                        }
+                    });
+
+                    return filtered;
+                },
+
+                get filteredCountries() {
+                    if (!this.filterCountry) return this.countries;
+                    const search = this.filterCountry.toLowerCase();
+                    return this.countries.filter(c =>
+                        c.code.toLowerCase().includes(search) ||
+                        c.name.toLowerCase().includes(search)
+                    );
+                },
+
+                formatDuration(ns) {
+                    if (!ns) return '-';
+                    if (typeof ns === 'string') {
+                        // handle "3.456s" or "45ms" string formats
+                        return ns;
+                    }
+                    const ms = ns / 1000000;
+                    if (ms < 1000) return Math.round(ms) + 'ms';
+                    return (ms / 1000).toFixed(2) + 's';
+                },
+
+                getCountryFlag(code) {
+                    if (!code || code.length !== 2) return '🌐';
+                    const codePoints = code.toUpperCase().split('').map(c => 127397 + c.charCodeAt(0));
+                    return String.fromCodePoint(...codePoints);
+                },
+
+                formatDate(dateStr) {
+                    if (!dateStr) return 'Never';
+                    const d = new Date(dateStr);
+                    const now = new Date();
+                    const diffMs = now - d;
+                    const diffMin = Math.floor(diffMs / 60000);
+                    const diffHr = Math.floor(diffMs / 3600000);
+                    const diffDay = Math.floor(diffMs / 86400000);
+
+                    if (diffMin < 1) return 'Just now';
+                    if (diffMin < 60) return diffMin + 'm ago';
+                    if (diffHr < 24) return diffHr + 'h ago';
+                    if (diffDay < 7) return diffDay + 'd ago';
+                    return d.toLocaleDateString();
+                },
+
+                copyConfig(result) {
+                    navigator.clipboard.writeText(result.config.raw);
+                    this.showToast('Config copied to clipboard');
+                },
+
+                copyModalResult(result) {
+                    navigator.clipboard.writeText(result.config.raw);
+                    this.showToast('Config copied to clipboard');
+                },
+
+                copyAll() {
+                    const configs = this.results.map(r => r.config.raw).join('\n');
+                    navigator.clipboard.writeText(configs);
+                    this.showToast(`Copied ${this.results.length} configs`);
+                },
+
+                showQRCode(result) {
+                    this.qrContent = result.config.raw;
+                    this.showQR = true;
+                    this.$nextTick(() => {
+                        const container = document.getElementById('qrcode');
+                        container.innerHTML = '';
+                        new QRCode(container, {
+                            text: result.config.raw,
+                            width: 256,
+                            height: 256,
+                            colorDark: '#000000',
+                            colorLight: '#ffffff'
+                        });
+                    });
+                },
+
+                showToast(message) {
+                    this.toast.message = message;
+                    this.toast.show = true;
+                    setTimeout(() => this.toast.show = false, 3000);
+                }
+            };
+        }
+    </script>
+    <script src="alpine.min.js"></script>
+</body>
+</html>

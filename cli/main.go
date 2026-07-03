@@ -108,7 +108,7 @@ func main() {
 
 	working := 0
 	for _, r := range results {
-		if r.Error == nil {
+			if r.Error == "" {
 			fmt.Println(r.Config.Raw)
 			working++
 		}
