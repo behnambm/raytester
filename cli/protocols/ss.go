@@ -2,15 +2,18 @@ package protocols
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/url"
 	"strings"
 
 	"raytest/core"
 )
 
+var ErrNotSS = errors.New("not a shadowsocks config")
+
 func ParseSS(raw string) (core.ProxyConfig, error) {
 	if !strings.HasPrefix(raw, "ss://") && !strings.HasPrefix(raw, "shadowsocks://") {
-		return core.ProxyConfig{}, nil
+		return core.ProxyConfig{}, ErrNotSS
 	}
 
 	prefix := "ss://"

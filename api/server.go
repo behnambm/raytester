@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -24,11 +25,12 @@ type Server struct {
 	nextID    atomic.Int64
 	store     storage.Storage
 	scheduler *scheduler.Scheduler
+	apiKey    string // empty means no auth required
 }
 
-func NewServer(cfg core.Config, storagePath string) *Server {
-	log.Printf("[api:server] NewServer: maxLatency=%v workers=%d xrayPath=%s storagePath=%s",
-		cfg.MaxLatency, cfg.Workers, cfg.XrayPath, storagePath)
+func NewServer(cfg core.Config, storagePath string, apiKey string) *Server {
+	log.Printf("[api:server] NewServer: maxLatency=%v workers=%d xrayPath=%s storagePath=%s apiKey=%v",
+		cfg.MaxLatency, cfg.Workers, cfg.XrayPath, storagePath, apiKey != "")
 
 	store := storage.NewFileStorage(storagePath)
 	sch := scheduler.New(store, cfg)
@@ -38,6 +40,7 @@ func NewServer(cfg core.Config, storagePath string) *Server {
 		sessions:  make(map[string]*TestSession),
 		store:     store,
 		scheduler: sch,
+		apiKey:    apiKey,
 	}
 }
 
@@ -53,24 +56,24 @@ func (s *Server) Start(addr string, frontendDir string) error {
 
 	mux := http.NewServeMux()
 
-	// Session-scoped routes
-	mux.HandleFunc("POST /api/test", s.corsMiddleware(s.handleStartTest))
+	// Session-scoped routes (GET endpoints are public for local use; mutating endpoints require auth)
+	mux.HandleFunc("POST /api/test", s.corsMiddleware(s.authMiddleware(s.handleStartTest)))
 	mux.HandleFunc("GET /api/tests", s.corsMiddleware(s.handleListSessions))
 	mux.HandleFunc("GET /api/test/{id}/stats", s.corsMiddleware(s.handleGetStats))
 	mux.HandleFunc("GET /api/test/{id}/results", s.corsMiddleware(s.handleGetResults))
-	mux.HandleFunc("POST /api/test/{id}/stop", s.corsMiddleware(s.handleStopTest))
+	mux.HandleFunc("POST /api/test/{id}/stop", s.corsMiddleware(s.authMiddleware(s.handleStopTest)))
 	mux.HandleFunc("GET /api/test/{id}/status", s.corsMiddleware(s.handleGetStatus))
-	mux.HandleFunc("DELETE /api/test/{id}", s.corsMiddleware(s.handleDeleteSession))
+	mux.HandleFunc("DELETE /api/test/{id}", s.corsMiddleware(s.authMiddleware(s.handleDeleteSession)))
 	mux.HandleFunc("GET /api/config", s.corsMiddleware(s.handleGetConfig))
 	mux.HandleFunc("GET /api/ws", s.handleWebSocket)
 
-	// Scheduler routes
-	mux.HandleFunc("POST /api/scheduler/tasks", s.corsMiddleware(s.handleCreateScheduledTask))
+	// Scheduler routes (all mutating routes require auth)
+	mux.HandleFunc("POST /api/scheduler/tasks", s.corsMiddleware(s.authMiddleware(s.handleCreateScheduledTask)))
 	mux.HandleFunc("GET /api/scheduler/tasks", s.corsMiddleware(s.handleListScheduledTasks))
 	mux.HandleFunc("GET /api/scheduler/tasks/{id}", s.corsMiddleware(s.handleGetScheduledTask))
-	mux.HandleFunc("PUT /api/scheduler/tasks/{id}", s.corsMiddleware(s.handleUpdateScheduledTask))
-	mux.HandleFunc("DELETE /api/scheduler/tasks/{id}", s.corsMiddleware(s.handleDeleteScheduledTask))
-	mux.HandleFunc("POST /api/scheduler/tasks/{id}/run", s.corsMiddleware(s.handleRunScheduledTask))
+	mux.HandleFunc("PUT /api/scheduler/tasks/{id}", s.corsMiddleware(s.authMiddleware(s.handleUpdateScheduledTask)))
+	mux.HandleFunc("DELETE /api/scheduler/tasks/{id}", s.corsMiddleware(s.authMiddleware(s.handleDeleteScheduledTask)))
+	mux.HandleFunc("POST /api/scheduler/tasks/{id}/run", s.corsMiddleware(s.authMiddleware(s.handleRunScheduledTask)))
 	mux.HandleFunc("GET /api/scheduler/tasks/{id}/results", s.corsMiddleware(s.handleGetScheduledTaskResults))
 	mux.HandleFunc("GET /api/scheduler/tasks/{id}/metrics", s.corsMiddleware(s.handleGetScheduledTaskMetrics))
 
@@ -116,6 +119,7 @@ func (s *Server) cleanupExpiredSessions() {
 		status := session.Tester.GetStats().Status
 		if (status == core.StatusDone || status == core.StatusStopped) && session.CreatedAt.Before(cutoff) {
 			log.Printf("[api:server] cleanupExpiredSessions: removing session %s (created %v, status=%s)", id, session.CreatedAt, status)
+			session.WsHub.Stop() // stop the hub goroutine
 			delete(s.sessions, id)
 			removed++
 		}
@@ -145,9 +149,10 @@ func (s *Server) getSession(id string) *TestSession {
 
 func (s *Server) corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:4433")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+		w.Header().Set("Access-Control-Max-Age", "86400")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -155,6 +160,31 @@ func (s *Server) corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		log.Printf("[api:server] corsMiddleware: %s %s", r.Method, r.URL.Path)
+		next(w, r)
+	}
+}
+
+func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// If no API key is configured, allow all requests (local development mode)
+		if s.apiKey == "" {
+			next(w, r)
+			return
+		}
+
+		key := r.Header.Get("X-API-Key")
+		if key == "" {
+			key = r.Header.Get("Authorization")
+			if strings.HasPrefix(key, "Bearer ") {
+				key = key[7:]
+			}
+		}
+
+		if key != s.apiKey {
+			log.Printf("[api:server] authMiddleware: unauthorized request from %s", r.RemoteAddr)
+			s.writeError(w, http.StatusUnauthorized, "Unauthorized: invalid API key")
+			return
+		}
 		next(w, r)
 	}
 }

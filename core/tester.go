@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -12,12 +13,15 @@ import (
 	"raytest/core/xray"
 )
 
+const MaxWorkers = 200
+
 type Tester struct {
-	cfg       Config
-	hooks     Hooks
-	stats     Stats
-	mu        sync.RWMutex
-	latencies []time.Duration
+	cfg          Config
+	hooks        Hooks
+	stats        Stats
+	mu           sync.RWMutex
+	latencies    []time.Duration
+	runningTotal time.Duration
 }
 
 func NewTester(cfg Config, hooks Hooks) *Tester {
@@ -50,50 +54,56 @@ func (t *Tester) SetStatus(status string) {
 	log.Printf("[core:Tester] SetStatus: status=%s", status)
 
 	if t.hooks.OnStatsUpdate != nil {
-		t.hooks.OnStatsUpdate(t.GetStats())
-	}
-}
-
-func (t *Tester) updateStats(result TestResult) {
-	t.mu.Lock()
-
-	t.stats.TestedCount++
-
-	if result.Error == "" {
-		t.stats.SuccessCount++
-		t.latencies = append(t.latencies, result.Latency)
-
-		if t.stats.MinLatency == 0 || result.Latency < t.stats.MinLatency {
-			t.stats.MinLatency = result.Latency
+			t.invokeHookSafe(t.hooks.OnStatsUpdate, t.GetStats())
 		}
-		if result.Latency > t.stats.MaxLatency {
-			t.stats.MaxLatency = result.Latency
+	}
+
+	func (t *Tester) invokeHookSafe(hook func(Stats), stats Stats) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[core:Tester] hook panic: %v\n%s", r, debug.Stack())
+			}
+		}()
+		hook(stats)
+	}
+
+	func (t *Tester) updateStats(result TestResult) {
+		t.mu.Lock()
+
+		t.stats.TestedCount++
+
+		if result.Error == "" {
+			t.stats.SuccessCount++
+			t.latencies = append(t.latencies, result.Latency)
+			t.runningTotal += result.Latency
+
+			if t.stats.MinLatency == 0 || result.Latency < t.stats.MinLatency {
+				t.stats.MinLatency = result.Latency
+			}
+			if result.Latency > t.stats.MaxLatency {
+				t.stats.MaxLatency = result.Latency
+			}
+
+			t.stats.AvgLatency = t.runningTotal / time.Duration(len(t.latencies))
+
+			log.Printf("[core:Tester] updateStats: success #%d latency=%v country=%s", t.stats.SuccessCount, result.Latency, result.Country)
+		} else {
+			t.stats.FailCount++
+			log.Printf("[core:Tester] updateStats: fail #%d err=%v", t.stats.FailCount, result.Error)
 		}
 
-		var total time.Duration
-		for _, l := range t.latencies {
-			total += l
+		if t.stats.TotalConfigs > 0 {
+			t.stats.Progress = float64(t.stats.TestedCount) / float64(t.stats.TotalConfigs)
 		}
-		t.stats.AvgLatency = total / time.Duration(len(t.latencies))
 
-		log.Printf("[core:Tester] updateStats: success #%d latency=%v country=%s", t.stats.SuccessCount, result.Latency, result.Country)
-	} else {
-		t.stats.FailCount++
-		log.Printf("[core:Tester] updateStats: fail #%d err=%v", t.stats.FailCount, result.Error)
+		// Copy stats before releasing lock to avoid GetStats() deadlock
+		snapshot := t.stats
+		t.mu.Unlock()
+
+		if t.hooks.OnStatsUpdate != nil {
+			t.invokeHookSafe(t.hooks.OnStatsUpdate, snapshot)
+		}
 	}
-
-	if t.stats.TotalConfigs > 0 {
-		t.stats.Progress = float64(t.stats.TestedCount) / float64(t.stats.TotalConfigs)
-	}
-
-	// Copy stats before releasing lock to avoid GetStats() deadlock
-	snapshot := t.stats
-	t.mu.Unlock()
-
-	if t.hooks.OnStatsUpdate != nil {
-		go t.hooks.OnStatsUpdate(snapshot)
-	}
-}
 
 func (t *Tester) Run(ctx context.Context, configs []ProxyConfig) []TestResult {
 	log.Printf("[core:Tester] Run: starting with %d configs", len(configs))
@@ -101,6 +111,10 @@ func (t *Tester) Run(ctx context.Context, configs []ProxyConfig) []TestResult {
 	workers := t.cfg.Workers
 	if workers <= 0 {
 		workers = DefaultWorkers
+	}
+	if workers > MaxWorkers {
+		log.Printf("[core:Tester] Run: workers=%d exceeds maximum %d, clamping", workers, MaxWorkers)
+		workers = MaxWorkers
 	}
 
 	total := len(configs)
@@ -144,11 +158,12 @@ func (t *Tester) Run(ctx context.Context, configs []ProxyConfig) []TestResult {
 	}()
 
 	var collected []TestResult
+loop:
 	for r := range results {
 		select {
 		case <-ctx.Done():
 			log.Printf("[core:Tester] Run: context cancelled, breaking result collection")
-			break
+			break loop
 		default:
 		}
 
@@ -211,7 +226,7 @@ func (t *Tester) runWorker(ctx context.Context, id int, jobs <-chan ProxyConfig,
 			t.hooks.OnTestStart(pc)
 		}
 
-		result := t.testConfig(pc, p, inst)
+		result := t.testConfig(ctx, pc, p, inst)
 		results <- result
 		processed++
 	}
@@ -219,7 +234,7 @@ func (t *Tester) runWorker(ctx context.Context, id int, jobs <-chan ProxyConfig,
 	log.Printf("[core:Tester] runWorker-%d: done, processed %d configs", id, processed)
 }
 
-func (t *Tester) testConfig(pc ProxyConfig, p *probe.Probe, inst *xray.XrayInstance) TestResult {
+func (t *Tester) testConfig(ctx context.Context, pc ProxyConfig, p *probe.Probe, inst *xray.XrayInstance) TestResult {
 	log.Printf("[core:Tester] testConfig: testing protocol=%s address=%s:%d", pc.Protocol, pc.Address, pc.Port)
 
 	if err := inst.WriteConfig(pc); err != nil {
@@ -238,7 +253,7 @@ func (t *Tester) testConfig(pc ProxyConfig, p *probe.Probe, inst *xray.XrayInsta
 		return TestResult{Config: pc, Error: "xray not ready"}
 	}
 
-	latency, err := p.Test(inst.Port)
+	latency, err := p.Test(ctx, inst.Port)
 	if err != nil {
 		log.Printf("[core:Tester] testConfig: Probe.Test FAILED: %v", err)
 		inst.Stop()
@@ -253,7 +268,7 @@ func (t *Tester) testConfig(pc ProxyConfig, p *probe.Probe, inst *xray.XrayInsta
 		return TestResult{Config: pc, Error: fmt.Sprintf("latency %v exceeds max %v", latency, t.cfg.MaxLatency)}
 	}
 
-	country, _ := p.GeoLookup(inst.Port)
+	country, _ := p.GeoLookup(ctx, inst.Port)
 	log.Printf("[core:Tester] testConfig: geo=%s/%s", country.Country, country.Name)
 	inst.Stop()
 

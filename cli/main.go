@@ -48,10 +48,25 @@ func main() {
 		return
 	}
 
-	var bar *progressbar.ProgressBar
+	bar := progressbar.NewOptions(len(configs),
+		progressbar.OptionSetDescription("Testing"),
+		progressbar.OptionSetWidth(40),
+		progressbar.OptionShowCount(),
+		progressbar.OptionShowIts(),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "=",
+			SaucerHead:    ">",
+			SaucerPadding: " ",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+	)
 
 	hooks := core.Hooks{
 		OnTestComplete: func(r core.TestResult) {
+			if r.Error != "" {
+				return
+			}
 			country := r.Country
 			countryName := r.CountryName
 			if country == "" {
@@ -60,24 +75,13 @@ func main() {
 			if countryName == "" {
 				countryName = "Unknown"
 			}
-			logger.Info.Printf("Working: %s (%v) [%s - %s]", r.Config.Raw[:40], r.Latency, country, countryName)
+			raw := r.Config.Raw
+			if len(raw) > 40 {
+				raw = raw[:40]
+			}
+			logger.Info.Printf("Working: %s (%v) [%s - %s]", raw, r.Latency, country, countryName)
 		},
 		OnProgress: func(p core.Progress) {
-			if bar == nil {
-				bar = progressbar.NewOptions(p.Total,
-					progressbar.OptionSetDescription("Testing"),
-					progressbar.OptionSetWidth(40),
-					progressbar.OptionShowCount(),
-					progressbar.OptionShowIts(),
-					progressbar.OptionSetTheme(progressbar.Theme{
-						Saucer:        "=",
-						SaucerHead:    ">",
-						SaucerPadding: " ",
-						BarStart:      "[",
-						BarEnd:        "]",
-					}),
-				)
-			}
 			bar.Add(1)
 		},
 	}
@@ -101,10 +105,8 @@ func main() {
 
 	results := tester.Run(ctx, configs)
 
-	if bar != nil {
-		bar.Finish()
-		fmt.Println()
-	}
+	bar.Finish()
+	fmt.Println()
 
 	working := 0
 	for _, r := range results {

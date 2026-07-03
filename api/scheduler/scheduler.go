@@ -4,7 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
+	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +23,12 @@ import (
 )
 
 const defaultRunTimeout = 10 * time.Minute
+
+var allowedXrayPaths = []string{
+	"/usr/local/bin/xray",
+	"/usr/bin/xray",
+	"/opt/xray/xray",
+}
 
 // Scheduler manages scheduled proxy testing tasks.
 type Scheduler struct {
@@ -248,18 +258,15 @@ func (s *Scheduler) executeTask(task storage.ScheduledTask) {
 	s.running[task.ID] = true
 	s.mu.Unlock()
 
-	defer func() {
-		s.mu.Lock()
-		delete(s.running, task.ID)
-		s.mu.Unlock()
-	}()
-
-	// Recover from panics to ensure the scheduler stays alive.
+	// Single defer that handles panic recovery AND always clears the running flag.
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[scheduler] executeTask: PANIC in task %s (%s): %v", task.ID, task.Name, r)
 			s.recordFailure(task)
 		}
+		s.mu.Lock()
+		delete(s.running, task.ID)
+		s.mu.Unlock()
 	}()
 
 	log.Printf("[scheduler] executeTask: starting task %s (%s)", task.ID, task.Name)
@@ -276,7 +283,19 @@ func (s *Scheduler) executeTask(task storage.ScheduledTask) {
 		cfg.Workers = task.Workers
 	}
 	if task.XrayPath != "" {
+		if err := validateXrayPath(task.XrayPath); err != nil {
+			log.Printf("[scheduler] executeTask: task=%s invalid xray_path: %v", task.ID, err)
+			s.recordFailure(task)
+			return
+		}
 		cfg.XrayPath = task.XrayPath
+	}
+
+	// Validate the URL before downloading (SSRF protection).
+	if err := validateURL(task.URL); err != nil {
+		log.Printf("[scheduler] executeTask: task=%s invalid URL: %v", task.ID, err)
+		s.recordFailure(task)
+		return
 	}
 
 	// Create context with timeout.
@@ -333,14 +352,14 @@ func (s *Scheduler) recordRun(task storage.ScheduledTask, startTime time.Time, r
 	duration := time.Since(startTime)
 	now := time.Now()
 	successCount := 0
-		for _, r := range results {
-			if r.Error == "" {
-				successCount++
-			}
+	for _, r := range results {
+		if r.Error == "" {
+			successCount++
 		}
+	}
 
 	metrics.TotalRuns++
-	metrics.SuccessRuns++ // the pipeline completed
+	metrics.CompletedRuns++ // the pipeline completed (download + test succeeded)
 	metrics.LastRunTime = &now
 	metrics.LastRunDuration = duration
 	metrics.LastResultCount = successCount
@@ -383,4 +402,54 @@ func (s *Scheduler) recordFailure(task storage.ScheduledTask) {
 
 	log.Printf("[scheduler] recordFailure: task=%s totalRuns=%d failures=%d",
 		task.ID, metrics.TotalRuns, metrics.FailureRuns)
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers (shared with handlers)
+// ---------------------------------------------------------------------------
+
+func validateXrayPath(path string) error {
+	for _, allowed := range allowedXrayPaths {
+		if path == allowed {
+			return nil
+		}
+	}
+	resolved, err := exec.LookPath("xray")
+	if err != nil {
+		return fmt.Errorf("xray binary not found in PATH")
+	}
+	if resolved != path {
+		return fmt.Errorf("xray binary path not allowed: %s", path)
+	}
+	return nil
+}
+
+func validateURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported URL scheme: %s (only http/https allowed)", parsed.Scheme)
+	}
+
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("URL has no host")
+	}
+
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		log.Printf("[scheduler] validateURL: DNS lookup failed for %s: %v", host, err)
+		return nil
+	}
+
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("URL resolves to a private/internal address (%s): %s", ip.String(), host)
+		}
+	}
+	return nil
 }

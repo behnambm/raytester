@@ -17,6 +17,7 @@ func main() {
 	maxLatency := flag.Duration("max-latency", core.DefaultMaxLatency, "Maximum allowed latency")
 	workers := flag.Int("workers", core.DefaultWorkers, "Worker count")
 	xrayPath := flag.String("xray-path", core.DefaultXrayPath, "Path to xray binary")
+	apiKey := flag.String("api-key", "", "API key for authentication (empty = no auth, for local use only)")
 	flag.Parse()
 
 	cfg := core.Config{
@@ -25,7 +26,7 @@ func main() {
 		XrayPath:   *xrayPath,
 	}
 
-	server := api.NewServer(cfg, *dataDir)
+	server := api.NewServer(cfg, *dataDir, *apiKey)
 	log.Fatal(server.Start(*addr, *frontendDir))
 }
 

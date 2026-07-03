@@ -20,7 +20,7 @@ type ScheduledTask struct {
 // RunMetrics tracks execution statistics for a scheduled task.
 type RunMetrics struct {
 	TotalRuns       int           `json:"total_runs"`
-	SuccessRuns     int           `json:"success_runs"`
+	CompletedRuns   int           `json:"completed_runs"`
 	FailureRuns     int           `json:"failure_runs"`
 	LastRunTime     *time.Time    `json:"last_run_time"`
 	LastRunDuration time.Duration `json:"last_run_duration"`

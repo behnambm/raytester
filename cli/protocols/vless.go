@@ -2,6 +2,7 @@ package protocols
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
 
 	"raytest/core"
@@ -42,11 +43,9 @@ func ParseVLESS(raw string) (core.ProxyConfig, error) {
 }
 
 func parsePort(s string) int {
-	var p int
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			p = p*10 + int(c-'0')
-		}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
 	}
-	return p
+	return n
 }

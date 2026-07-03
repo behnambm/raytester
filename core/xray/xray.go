@@ -59,12 +59,12 @@ func (xi *XrayInstance) WriteConfig(pc ProxyConfig) error {
 		return err
 	}
 
-	if err := os.MkdirAll(TempDir, 0755); err != nil {
+	if err := os.MkdirAll(TempDir, 0700); err != nil {
 		log.Printf("[core:xray] WriteConfig: mkdir FAILED: %v", err)
 		return err
 	}
 
-	if err := os.WriteFile(xi.ConfigPath, data, 0644); err != nil {
+	if err := os.WriteFile(xi.ConfigPath, data, 0600); err != nil {
 		log.Printf("[core:xray] WriteConfig: write file FAILED: %v", err)
 		return err
 	}
@@ -95,9 +95,10 @@ func (xi *XrayInstance) Start(xrayPath string) error {
 func (xi *XrayInstance) Stop() error {
 	log.Printf("[core:xray] Stop: port=%d", xi.Port)
 	if xi.Cmd != nil && xi.Cmd.Process != nil {
-		err := xi.Cmd.Process.Kill()
-		log.Printf("[core:xray] Stop: killed process, err=%v", err)
-		return err
+		_ = xi.Cmd.Process.Kill()
+		_, _ = xi.Cmd.Process.Wait() // reap zombie
+		log.Printf("[core:xray] Stop: process killed and reaped")
+		return nil
 	}
 	return nil
 }
@@ -170,7 +171,10 @@ func buildOutbound(pc ProxyConfig) map[string]interface{} {
 		return buildSSOutbound(pc)
 	default:
 		log.Printf("[core:xray] buildOutbound: unknown protocol=%s", pc.Protocol)
-		return nil
+		return map[string]interface{}{
+			"protocol": "freedom",
+			"settings": map[string]interface{}{},
+		}
 	}
 }
 

@@ -47,9 +47,10 @@ Working configs are printed to **stdout** (pipeable). Logs go to **stderr**.
 ## API Server
 
 ```bash
-make run                          # default http://localhost:4433
-make run ADDR=:8080               # custom port
-make run ADDR=:3000 FRONTEND=./dist
+make run                              # default http://localhost:4433, no auth
+make run ADDR=:8080                   # custom port
+make run ADDR=:3000 FRONTEND=./dist   # custom frontend
+make run API_KEY=my-secret-key        # with authentication enabled
 ```
 
 | Flag | Default | Description |
@@ -60,8 +61,21 @@ make run ADDR=:3000 FRONTEND=./dist
 | `--max-latency` | `500ms` | Default max latency |
 | `--workers` | `20` | Default worker count |
 | `--xray-path` | `xray` | Path to xray binary |
+| `--api-key` | *(none)* | API key for authentication. When set, all mutating endpoints require `X-API-Key` header. Leave empty for local dev (no auth). |
 
 Data dir can also be set via `RAYTESTER_DATA_DIR` env var.
+
+### Authentication
+
+When `--api-key` is set, mutating endpoints (`POST`, `PUT`, `DELETE`) require the key via `X-API-Key` or `Authorization: Bearer <key>` header. Read-only endpoints (`GET`) and the WebSocket remain accessible without auth for convenience. The web UI works out-of-the-box when no key is configured — set a key only when exposing the server beyond localhost.
+
+### Security
+
+- **CORS**: restricted to `localhost:4433` origins
+- **WebSocket**: origin validation (localhost only)
+- **URL validation**: blocks private/internal IP ranges (SSRF protection)
+- **Xray path**: only allows known paths or PATH-resolved `xray` binary
+- **File permissions**: temp configs use `0600` (owner-only)
 
 ### Web UI
 
@@ -69,7 +83,7 @@ Open `http://localhost:4433` in a browser.
 
 **Manual Test tab** — enter a subscription URL, configure latency/workers, start a test. Results stream in real-time via WebSocket with filtering by protocol, country, and sort options. Copy configs or generate QR codes.
 
-**Scheduled Tasks tab** — create recurring tests with cron expressions. Quick presets: 30min, 1h, 3h, 6h, 12h, daily. Each task tracks metrics (total runs, success/fail counts, last run, avg duration). View results in a modal with the same table format.
+**Scheduled Tasks tab** — create recurring tests with cron expressions. Quick presets: 30min, 1h, 3h, 6h, 12h, daily. Each task tracks metrics (total runs, completed/fail counts, last run, avg duration). View results in a modal with the same table format.
 
 ### API Endpoints
 
@@ -142,7 +156,7 @@ Tasks are stored as JSON files in `~/.raytester/scheduler/` (configurable via `-
 
 - **metadata**: name, URL, cron expression, config overrides
 - **results**: latest run's working configs (overwritten each run)
-- **metrics**: total runs, success/failure counts, last/avg duration, result count
+- **metrics**: total runs, completed/failure counts, last/avg duration, result count
 
 The `Storage` interface is pluggable — swap the file implementation for a database or S3 backend without touching the scheduler.
 

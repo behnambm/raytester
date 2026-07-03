@@ -2,9 +2,10 @@
 
 ADDR ?= :4433
 FRONTEND ?= frontend
+API_KEY ?=
 
 run:
-	go run cmd/api/main.go --addr $(ADDR) --frontend $(FRONTEND)
+	go run cmd/api/main.go --addr $(ADDR) --frontend $(FRONTEND) $(if $(API_KEY),--api-key $(API_KEY),)
 	@echo ""
 	@echo "Frontend: http://localhost$(ADDR)"
 

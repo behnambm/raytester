@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -25,10 +26,14 @@ func New() *Probe {
 	}
 }
 
-func (p *Probe) Test(port int) (time.Duration, error) {
+func (p *Probe) Test(ctx context.Context, port int) (time.Duration, error) {
 	log.Printf("[core:probe] Test: probing port=%d", port)
 
-	proxyURL, _ := url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", port))
+	proxyURL, err := url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", port))
+	if err != nil {
+		log.Printf("[core:probe] Test: invalid proxy URL: %v", err)
+		return 0, err
+	}
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(proxyURL),
 	}
@@ -38,8 +43,14 @@ func (p *Probe) Test(port int) (time.Duration, error) {
 		Timeout:   10 * time.Second,
 	}
 
+	req, err := http.NewRequestWithContext(ctx, "GET", ProbeURL, nil)
+	if err != nil {
+		log.Printf("[core:probe] Test: create request FAILED: %v", err)
+		return 0, err
+	}
+
 	start := time.Now()
-	resp, err := client.Get(ProbeURL)
+	resp, err := client.Do(req)
 	latency := time.Since(start)
 
 	if err != nil {
@@ -62,10 +73,14 @@ type GeoResult struct {
 	Name    string
 }
 
-func (p *Probe) GeoLookup(port int) (GeoResult, error) {
+func (p *Probe) GeoLookup(ctx context.Context, port int) (GeoResult, error) {
 	log.Printf("[core:probe] GeoLookup: looking up geo via port=%d", port)
 
-	proxyURL, _ := url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", port))
+	proxyURL, err := url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", port))
+	if err != nil {
+		log.Printf("[core:probe] GeoLookup: invalid proxy URL: %v", err)
+		return GeoResult{}, err
+	}
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(proxyURL),
 	}
@@ -75,7 +90,13 @@ func (p *Probe) GeoLookup(port int) (GeoResult, error) {
 		Timeout:   10 * time.Second,
 	}
 
-	resp, err := client.Get(GeoIPURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", GeoIPURL, nil)
+	if err != nil {
+		log.Printf("[core:probe] GeoLookup: create request FAILED: %v", err)
+		return GeoResult{}, err
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[core:probe] GeoLookup: FAILED: %v", err)
 		return GeoResult{}, err

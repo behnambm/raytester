@@ -30,17 +30,18 @@ func Deduplicate(configs []core.ProxyConfig) []core.ProxyConfig {
 func fingerprint(pc core.ProxyConfig) string {
 	var parts []string
 	parts = append(parts, pc.Protocol)
-	parts = append(parts, pc.Address)
+	parts = append(parts, strings.ToLower(strings.TrimSpace(pc.Address)))
 	parts = append(parts, fmt.Sprintf("%d", pc.Port))
 	parts = append(parts, pc.UUID)
 	parts = append(parts, fmt.Sprintf("%d", pc.AlterID))
 	parts = append(parts, pc.Security)
 	parts = append(parts, pc.Network)
 	parts = append(parts, pc.Path)
-	parts = append(parts, pc.Host)
-	parts = append(parts, pc.SNI)
+	parts = append(parts, strings.ToLower(strings.TrimSpace(pc.Host)))
+	parts = append(parts, strings.ToLower(strings.TrimSpace(pc.SNI)))
 	parts = append(parts, pc.Method)
 	parts = append(parts, pc.Password)
+	parts = append(parts, fmt.Sprintf("%t", pc.TLS))
 
 	normalized := strings.Join(parts, "|")
 	hash := sha256.Sum256([]byte(normalized))

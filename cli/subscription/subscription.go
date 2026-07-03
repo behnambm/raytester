@@ -2,9 +2,11 @@ package subscription
 
 import (
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"raytest/core"
 )
@@ -14,7 +16,9 @@ type DownloadConfig struct {
 }
 
 func Download(cfg *DownloadConfig) (string, error) {
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
 	req, err := http.NewRequest("GET", cfg.URL, nil)
 	if err != nil {
 		return "", err
@@ -27,7 +31,7 @@ func Download(cfg *DownloadConfig) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", io.EOF
+		return "", fmt.Errorf("unexpected status: %d %s", resp.StatusCode, resp.Status)
 	}
 
 	limited := io.LimitReader(resp.Body, core.MaxBodySize)

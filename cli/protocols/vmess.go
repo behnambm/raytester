@@ -3,10 +3,14 @@ package protocols
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"strconv"
 	"strings"
 
 	"raytest/core"
 )
+
+var ErrNotVMess = errors.New("not a vmess config")
 
 type vmessJSON struct {
 	Add  string `json:"add"`
@@ -24,7 +28,7 @@ type vmessJSON struct {
 
 func ParseVMess(raw string) (core.ProxyConfig, error) {
 	if !strings.HasPrefix(raw, "vmess://") {
-		return core.ProxyConfig{}, nil
+		return core.ProxyConfig{}, ErrNotVMess
 	}
 
 	b64 := strings.TrimPrefix(raw, "vmess://")
@@ -64,11 +68,9 @@ func ParseVMess(raw string) (core.ProxyConfig, error) {
 }
 
 func parseInt(s string) int {
-	var n int
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int(c-'0')
-		}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
 	}
 	return n
 }

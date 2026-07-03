@@ -3,8 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
+	"os/exec"
+	"strings"
 	"time"
 
 	"raytest/cli/dedupe"
@@ -12,6 +18,63 @@ import (
 	"raytest/cli/subscription"
 	"raytest/core"
 )
+
+var allowedXrayPaths = []string{
+	"/usr/local/bin/xray",
+	"/usr/bin/xray",
+	"/opt/xray/xray",
+}
+
+func validateXrayPath(path string) error {
+	// Check against allowed paths list.
+	for _, allowed := range allowedXrayPaths {
+		if path == allowed {
+			return nil
+		}
+	}
+	// Resolve from PATH and verify it matches.
+	resolved, err := exec.LookPath("xray")
+	if err != nil {
+		return fmt.Errorf("xray binary not found in PATH")
+	}
+	if resolved != path {
+		return fmt.Errorf("xray binary path not allowed: %s", path)
+	}
+	return nil
+}
+
+func validateURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported URL scheme: %s (only http/https allowed)", parsed.Scheme)
+	}
+
+	host := parsed.Hostname()
+	if host == "" {
+		return errors.New("URL has no host")
+	}
+
+	// Resolve DNS and block private/internal IPs.
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		// DNS resolution failure — allow with log; some cloud subscription servers
+		// may have ephemeral DNS. This is a best-effort check.
+		log.Printf("[api:handlers] validateURL: DNS lookup failed for %s: %v", host, err)
+		return nil
+	}
+
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("URL resolves to a private/internal address (%s): %s", ip.String(), host)
+		}
+	}
+	return nil
+}
 
 func (s *Server) handleStartTest(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[api:handlers] handleStartTest: request received")
@@ -36,6 +99,13 @@ func (s *Server) handleStartTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSRF protection: validate the URL scheme and block private IPs.
+	if err := validateURL(req.URL); err != nil {
+		log.Printf("[api:handlers] handleStartTest: URL validation FAILED: %v", err)
+		s.writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid URL: %v", err))
+		return
+	}
+
 	cfg := s.cfg
 	if req.MaxLatency != "" {
 		maxLatency, err := time.ParseDuration(req.MaxLatency)
@@ -50,6 +120,11 @@ func (s *Server) handleStartTest(w http.ResponseWriter, r *http.Request) {
 		cfg.Workers = req.Workers
 	}
 	if req.XrayPath != "" {
+		if err := validateXrayPath(req.XrayPath); err != nil {
+			log.Printf("[api:handlers] handleStartTest: xray path validation FAILED: %v", err)
+			s.writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid xray_path: %v", err))
+			return
+		}
 		cfg.XrayPath = req.XrayPath
 	}
 
@@ -63,46 +138,34 @@ func (s *Server) handleStartTest(w http.ResponseWriter, r *http.Request) {
 	wsHub := NewWSHub()
 	go wsHub.Run()
 
+	// Build tester with hooks that capture the session pointer directly
+	// (avoids TOCTOU issues with getSession).
+	// We use a local variable to pass the session reference before it's stored.
+	session := &TestSession{
+		ID:        id,
+		URL:       req.URL,
+		CreatedAt: time.Now(),
+		Config:    cfg,
+		Cancel:    cancel,
+		WsHub:     wsHub,
+	}
+
 	hooks := core.Hooks{
 		OnTestComplete: func(r core.TestResult) {
-			session := s.getSession(id)
-			if session == nil {
-				log.Printf("[api:handlers] handleStartTest hook: OnTestComplete session %s not found", id)
-				return
-			}
 			session.AppendResult(r)
 			s.broadcastResult(session, r)
 		},
 		OnStatsUpdate: func(stats core.Stats) {
-			session := s.getSession(id)
-			if session == nil {
-				log.Printf("[api:handlers] handleStartTest hook: OnStatsUpdate session %s not found", id)
-				return
-			}
 			s.broadcastStats(session)
 		},
 		OnComplete: func(results []core.TestResult) {
-			session := s.getSession(id)
-			if session == nil {
-				log.Printf("[api:handlers] handleStartTest hook: OnComplete session %s not found", id)
-				return
-			}
 			session.SetResults(results)
 			s.broadcastStatus(session, core.StatusDone)
 		},
 	}
 
 	tester := core.NewTester(cfg, hooks)
-
-	session := &TestSession{
-		ID:        id,
-		URL:       req.URL,
-		CreatedAt: time.Now(),
-		Config:    cfg,
-		Tester:    tester,
-		Cancel:    cancel,
-		WsHub:     wsHub,
-	}
+	session.Tester = tester
 
 	s.mu.Lock()
 	s.sessions[id] = session

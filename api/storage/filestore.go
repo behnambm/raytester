@@ -61,7 +61,7 @@ func (fs *FileStorage) readJSON(path string, v interface{}) error {
 	return json.Unmarshal(data, v)
 }
 
-// writeJSON atomically writes v as JSON to path (write to temp + rename).
+// writeJSON atomically writes v as JSON to path (write to temp + fsync + rename).
 func (fs *FileStorage) writeJSON(path string, v interface{}) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -72,13 +72,34 @@ func (fs *FileStorage) writeJSON(path string, v interface{}) error {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("create tmp: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
 		return fmt.Errorf("write tmp: %w", err)
 	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("sync tmp: %w", err)
+	}
+	f.Close()
+
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath) // best-effort cleanup
 		return fmt.Errorf("rename: %w", err)
 	}
+
+	// Fsync directory to ensure rename is durable.
+	if dirFile, err := os.Open(dir); err == nil {
+		dirFile.Sync()
+		dirFile.Close()
+	}
+
 	return nil
 }
 
@@ -103,6 +124,9 @@ func (fs *FileStorage) CreateTask(task ScheduledTask) error {
 		return err
 	}
 
+	// Set the output path on the task metadata (pointing to the results file).
+	task.OutputPath = fs.resultsPath(task.ID)
+
 	// Write task metadata.
 	if err := fs.writeJSON(fs.taskPath(task.ID), task); err != nil {
 		return fmt.Errorf("create task: %w", err)
@@ -118,10 +142,6 @@ func (fs *FileStorage) CreateTask(task ScheduledTask) error {
 	if err := fs.writeJSON(fs.metricsPath(task.ID), metrics); err != nil {
 		return fmt.Errorf("create metrics: %w", err)
 	}
-
-	// Set the output path on the task metadata (pointing to the results file).
-	task.OutputPath = fs.resultsPath(task.ID)
-	_ = fs.writeJSON(fs.taskPath(task.ID), task) // update with output path
 
 	return nil
 }
@@ -242,8 +262,8 @@ func (fs *FileStorage) SaveMetrics(taskID string, metrics RunMetrics) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	log.Printf("[storage] SaveMetrics: task=%s totalRuns=%d success=%d fail=%d",
-		taskID, metrics.TotalRuns, metrics.SuccessRuns, metrics.FailureRuns)
+	log.Printf("[storage] SaveMetrics: task=%s totalRuns=%d completed=%d fail=%d",
+		taskID, metrics.TotalRuns, metrics.CompletedRuns, metrics.FailureRuns)
 	return fs.writeJSON(fs.metricsPath(taskID), metrics)
 }
 

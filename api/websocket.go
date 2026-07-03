@@ -5,13 +5,20 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		origin := r.Header.Get("Origin")
+		// Allow localhost origins and no-origin (direct browser access)
+		if origin == "" {
+			return true
+		}
+		return origin == "http://localhost:4433" || origin == "https://localhost:4433" ||
+			origin == "http://127.0.0.1:4433" || origin == "https://127.0.0.1:4433"
 	},
 }
 
@@ -26,6 +33,7 @@ type WSHub struct {
 	register   chan *WSClient
 	unregister chan *WSClient
 	mu         sync.RWMutex
+	done       chan struct{}
 }
 
 func NewWSHub() *WSHub {
@@ -35,6 +43,7 @@ func NewWSHub() *WSHub {
 		broadcast:  make(chan []byte, 256),
 		register:   make(chan *WSClient),
 		unregister: make(chan *WSClient),
+		done:       make(chan struct{}),
 	}
 }
 
@@ -42,6 +51,9 @@ func (h *WSHub) Run() {
 	log.Printf("[api:ws] hub: Run loop started")
 	for {
 		select {
+		case <-h.done:
+			log.Printf("[api:ws] hub: Run loop stopped via done channel")
+			return
 		case client := <-h.register:
 			h.mu.Lock()
 			h.clients[client] = true
@@ -60,7 +72,7 @@ func (h *WSHub) Run() {
 			log.Printf("[api:ws] hub: client unregistered (total: %d)", count)
 
 		case message := <-h.broadcast:
-			h.mu.RLock()
+			h.mu.Lock()
 			for client := range h.clients {
 				select {
 				case client.send <- message:
@@ -69,9 +81,14 @@ func (h *WSHub) Run() {
 					delete(h.clients, client)
 				}
 			}
-			h.mu.RUnlock()
+			h.mu.Unlock()
 		}
 	}
+}
+
+func (h *WSHub) Stop() {
+	log.Printf("[api:ws] hub: Stop called")
+	close(h.done)
 }
 
 func (h *WSHub) Broadcast(msg WSMessage) {
@@ -81,7 +98,11 @@ func (h *WSHub) Broadcast(msg WSMessage) {
 		return
 	}
 	log.Printf("[api:ws] Broadcast: sending type=%s (%d bytes)", msg.Type, len(data))
-	h.broadcast <- data
+	select {
+	case h.broadcast <- data:
+	default:
+		log.Printf("[api:ws] Broadcast: dropping message (channel full)")
+	}
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -128,6 +149,7 @@ func (c *WSClient) writePump() {
 	}()
 
 	for message := range c.send {
+		c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 			log.Printf("[api:ws] writePump: write error: %v", err)
 			return
